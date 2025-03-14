@@ -31,7 +31,14 @@ http {
 
     client_max_body_size 128m;
 
+    server_names_hash_max_size 2048;
+    server_names_hash_bucket_size 128;
+
     #gzip  on;
+
+    add_header 'Cross-Origin-Embedder-Policy' 'credentialless';
+    add_header 'Cross-Origin-Opener-Policy' 'same-origin';
+    add_header 'Cross-Origin-Resource-Policy' 'cross-origin';
 
     # HTTP server
     #
@@ -45,9 +52,6 @@ http {
        location / {
            root $qweb_root/htdocs;
            
-           add_header 'Cross-Origin-Embedder-Policy' 'require-corp'; 
-           add_header 'Cross-Origin-Opener-Policy' 'same-origin';
-	   
            location ~ \.php$ {
               try_files $uri $uri/ =404;
               fastcgi_pass   127.0.0.1:9000;
@@ -96,9 +100,6 @@ http {
        location / {
            root $qweb_root/htdocs;
            
-           add_header 'Cross-Origin-Embedder-Policy' 'require-corp'; 
-           add_header 'Cross-Origin-Opener-Policy' 'same-origin';
-	   
            location ~ \.php$ {
               try_files $uri $uri/ =404;
               fastcgi_pass   127.0.0.1:9000;
