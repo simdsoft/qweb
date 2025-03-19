@@ -60,10 +60,9 @@ $actions.init = @{
         
         $mysql_pass = $local_props['mysql_pass']
         $mysql_auth_backport = [int]$local_props['mysql_auth_backport'] -and $mysql_ver.Major -lt 9
-        if ($mysql_auth_backport) {
-            $my_conf_file = Join-Path $qweb_root 'etc/mysql/my.ini'
-            Copy-Item $my_conf_file $mysql_dir -Force
-        }
+
+        $my_conf_file = Join-Path $qweb_root @('etc/mysql/my.ini', 'etc/mysql/my-old.ini')[$mysql_auth_backport]
+        Copy-Item $my_conf_file $mysql_dir -Force
 
         Push-Location $mysqld_cwd
         & $mysqld_prog --initialize-insecure --datadir $mysqld_data | Out-Host
@@ -89,7 +88,7 @@ $actions.init = @{
 $actions.start = @{
     nginx = {
         $nginx_dir = Join-Path $install_prefix "nginx/$nginx_ver"
-        $nginx_conf = Join-Path $qweb_root "etc/nginx/$nginx_ver/nginx.conf"
+        $nginx_conf = Join-Path $qweb_root "etc/nginx/$nginx_base_ver/nginx.conf"
         Push-Location $nginx_dir
         bash -c "./sbin/nginx -t -c '$nginx_conf'" | Out-Host
         bash -c "./sbin/nginx -c '$nginx_conf' >/dev/null 2>&1 &"
@@ -99,7 +98,6 @@ $actions.start = @{
         bash -c "nohup php-cgi -b 127.0.0.1:9000 >/dev/null 2>&1 &"
     }
     mysql = {
-        # bash -c "nohup sudo mysqld --user=$qweb_user >/dev/null 2>&1 &"
         $mysql_dir = Join-Path $install_prefix "mysql/$mysql_ver"
         $myslqd_prog = Join-Path $mysql_dir 'bin/mysqld'
         Start-Process $myslqd_prog -ArgumentList "--datadir `"$mysqld_data`"" -WorkingDirectory $mysqld_cwd

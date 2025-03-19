@@ -10,7 +10,7 @@ param(
     [switch]$version
 )
 
-$qweb_ver = '1.3.0'
+$qweb_ver = '2.0.0'
 
 $global:qweb_host_cpu = [System.Runtime.InteropServices.RuntimeInformation, mscorlib]::OSArchitecture.ToString().ToLower()
 
@@ -189,6 +189,11 @@ $actions = @{
             throw "targets is empty!"
         }
 
+        if ($IsLinux -and !(Get-Command 'unzip' -ErrorAction SilentlyContinue)) {
+            sudo apt update
+            sudo apt install --allow-unauthenticated --yes unzip
+        }
+
         if ($targets -eq 'all') {
             $targets = @('nginx', 'php', 'mysql')
             $setup_actions = @('init'; 'fetch'; 'install')
@@ -198,10 +203,13 @@ $actions = @{
             $targets = "$targets".Split(',')
         }
 
+        $Script:nginx_base_ver = "$($nginx_ver.Major).$($nginx_ver.Minor)"
+
         $Script:targets = $targets
 
         mkdirs $install_prefix
         mkdirs $download_path
+        # windows prebuilt nginx require 'var/nginx/logs' and 'var/nginx/temp'
         mkdirs $(Join-Path $PSScriptRoot 'var/nginx/logs')
         mkdirs $(Join-Path $PSScriptRoot 'var/nginx/temp')
         mkdirs $(Join-Path $PSScriptRoot 'var/php-cgi')
@@ -211,8 +219,8 @@ $actions = @{
             $props_lines = (Get-Content -Path $prop_file)
         }
         else {
-            $mysql_pass = gen_random_key -Length 16
-            $props_lines = @("mysql_pass=$mysql_pass", "mysql_auth_backport=0", "server_names=sandbox.qweb.dev")
+            $mysql_pass = gen_random_key -Length 32
+            $props_lines = @("mysql_pass=$mysql_pass", "mysql_auth_backport=0", "server_names=local.qweb.dev")
             Set-Content -Path $prop_file -Value $props_lines
         }
         $Script:local_props = ConvertFrom-Props $props_lines
@@ -285,13 +293,13 @@ function mod_php_ini($php_ini_file, $do_setup) {
 }
 
 if ($IsWin) {
-    . $(Join-Path $PSScriptRoot 'contrib/qweb_win.ps1')
+    . $(Join-Path $PSScriptRoot 'contrib/windows.ps1')
 }
 elseif ($IsUbuntu) {
-    . $(Join-Path $PSScriptRoot 'contrib/qweb_linux.ps1')
+    . $(Join-Path $PSScriptRoot 'contrib/linux.ps1')
 }
 elseif ($IsMacOS) {
-    . $(Join-Path $PSScriptRoot 'contrib/qweb_macos.ps1')
+    . $(Join-Path $PSScriptRoot 'contrib/macos.ps1')
 }
 else {
     throw "Unsupported OS: $($PSVersionTable.OS)"
@@ -345,65 +353,87 @@ $actions.init.phpmyadmin = {
 }
 
 $actions.init.nginx = {
-    $nginx_conf_dir = Join-Path $PSScriptRoot "etc/nginx/$nginx_ver"
+    $nginx_conf_file_tmp = Join-Path $download_path 'nginx.conf'
+    $nginx_conf_dir = Join-Path $PSScriptRoot "etc/nginx/$nginx_base_ver"
     $nginx_conf_file = Join-Path $nginx_conf_dir 'nginx.conf'
-    if (Test-Path $nginx_conf_file -PathType Leaf) {
-        $anwser = if ($force) { Read-Host "Are you want force reinit nginx, will lost conf?(y/N)" } else { 'N' }
-        if ($anwser -inotlike 'y*') {
+    if ((Test-Path $nginx_conf_file_tmp -PathType Leaf) -and (Test-Path $nginx_conf_file)) {
+        $anwser = if ($force) { Read-Host "Are you want force reinit nginx, will lost conf?(Y/n)" } else { 'N' }
+        if ($anwser -ilike 'n*') {
             println "nginx init: nothing need to do"
             return
         }
     }
 
-    if ((Test-Path $nginx_conf_dir -PathType Container)) {
-        $lines = Get-Content -Path (Join-Path $nginx_conf_dir 'nginx.conf.in')
-        $line_index = 0
-        $qweb_cert_dir = Join-Path $PSScriptRoot 'etc/certs'
-        if (!(Test-Path (Join-Path $qweb_cert_dir 'server.crt') -PathType Leaf) -or
-            !(Test-Path (Join-Path $qweb_cert_dir 'server.key') -PathType Leaf)
-        ) {
-            $qweb_cert_dir = (Join-Path $qweb_cert_dir 'sample').Replace('\', '/')
-            $qweb_rel_cert_dir = '../../certs/sample'
-            Write-Warning "Using sample certs in dir $qweb_cert_dir"
+    if ($IsUbuntu) {
+        $nginx_grp = $(cat /etc/passwd | grep $nginx_user)
+        if (!$nginx_grp) {
+            println "Creating nginx user: $nginx_user ..."
+            sudo useradd -M -s /sbin/nologin $nginx_user
         }
-        else {
-            $qweb_rel_cert_dir = '../../certs'
-        }
-        $qweb_cert_dir = $qweb_cert_dir.Replace('\', '/')
-        foreach ($line_text in $lines) {
-            if ($line_text.Contains('@QWEB_ROOT@')) {
-                $lines[$line_index] = $line_text.Replace('@QWEB_ROOT@', $qweb_root)
-            }
-            elseif ($line_text.Contains('@QWEB_SERVER_NAMES@')) {
-                $lines[$line_index] = $line_text.Replace('@QWEB_SERVER_NAMES@', $local_props['server_names'])
-            }
-            elseif ($line_text.Contains('@QWEB_CERT_DIR@')) {
-                $lines[$line_index] = $line_text.Replace('@QWEB_CERT_DIR@', $qweb_rel_cert_dir)
-            }
-            elseif ($line_text.Contains('@phpmyadmin_ver@')) {
-                $lines[$line_index] = $line_text.Replace('@phpmyadmin_ver@', $phpmyadmin_ver)
-            }
-            elseif (!$IsWin -and !$IsMacOS -and $line_text.Contains('nobody')) {
-                $line_text = $line_text.Replace('nobody', "$(whoami)")
-                if ($line_text.StartsWith('#')) { $line_text = $line_text.TrimStart('#') }
-                $lines[$line_index] = $line_text
-            }
-            ++$line_index
-        }
-        Set-Content -Path (Join-Path $nginx_conf_dir 'nginx.conf') -Value $lines
+        sudo chown -R ${php_user}:${php_user} $qweb_root/htdocs
+        sudo chown -R ${nginx_user}:${nginx_user} $qweb_root/etc/nginx
+        sudo chown -R ${nginx_user}:${nginx_user} $qweb_root/var/nginx
+        sudo chmod 755 $qweb_root/htdocs $qweb_root/etc/nginx `
+            $nginx_conf_dir `
+            $qweb_root/var/nginx `
+            $qweb_root/var/nginx/logs `
+            $qweb_root/var/nginx/temp
+        # sudo chmod 644 $nginx_conf_dir/* $qweb_root/var/nginx/logs/*
     }
-    else {
-        mkdirs $nginx_conf_dir
-        Copy-Item (Join-Path $install_prefix "nginx/$nginx_ver/conf/*") $nginx_conf_dir
+    elseif ($IsWin) {
+        $nginx_conf_src = Join-Path $qweb_root "opt/nginx/$nginx_ver/conf"
+        $paths = Get-ChildItem $nginx_conf_src
+        foreach ($path in $paths) {
+            if($path.FullName.EndsWith('nginx.conf')) {
+                continue
+            }
+            $filename = Split-Path $path.FullName -Leaf
+            $dest_path = Join-Path $nginx_conf_dir $filename
+            New-Item -ItemType SymbolicLink -Path $dest_path -Target $path.FullName 2>$null
+        }
     }
 
-    if ($IsUbuntu) {
-        # $nginx_grp = $(cat /etc/passwd | grep nginx)
-        # if (!$nginx_grp) {
-        #     sudo groupadd nginx
-        #     sudo useradd -g nginx -s /sbin/nologin nginx
-        # }
-        sudo chown -R ${qweb_user}:${qweb_user} $qweb_root/htdocs
+    $lines = Get-Content -Path (Join-Path $nginx_conf_dir 'nginx.conf.in')
+    $line_index = 0
+    $qweb_cert_dir = Join-Path $PSScriptRoot 'etc/certs'
+    if (!(Test-Path (Join-Path $qweb_cert_dir 'server.crt') -PathType Leaf) -or
+        !(Test-Path (Join-Path $qweb_cert_dir 'server.key') -PathType Leaf)
+    ) {
+        $qweb_cert_dir = (Join-Path $qweb_cert_dir 'sample').Replace('\', '/')
+        $qweb_rel_cert_dir = '../../certs/sample'
+        Write-Warning "Using sample certs in dir $qweb_cert_dir"
+    }
+    else {
+        $qweb_rel_cert_dir = '../../certs'
+    }
+    $qweb_cert_dir = $qweb_cert_dir.Replace('\', '/')
+    foreach ($line_text in $lines) {
+        if ($line_text.Contains('@QWEB_ROOT@')) {
+            $lines[$line_index] = $line_text.Replace('@QWEB_ROOT@', $qweb_root)
+        }
+        elseif ($line_text.Contains('@QWEB_SERVER_NAMES@')) {
+            $lines[$line_index] = $line_text.Replace('@QWEB_SERVER_NAMES@', $local_props['server_names'])
+        }
+        elseif ($line_text.Contains('@QWEB_CERT_DIR@')) {
+            $lines[$line_index] = $line_text.Replace('@QWEB_CERT_DIR@', $qweb_rel_cert_dir)
+        }
+        elseif ($line_text.Contains('@phpmyadmin_ver@')) {
+            $lines[$line_index] = $line_text.Replace('@phpmyadmin_ver@', $phpmyadmin_ver)
+        }
+        elseif (!$IsWin -and !$IsMacOS -and $line_text.Contains('nobody')) {
+            $line_text = $line_text.Replace('nobody', "$nginx_user")
+            if ($line_text.StartsWith('#')) { $line_text = $line_text.TrimStart('#') }
+            $lines[$line_index] = $line_text
+        }
+        ++$line_index
+    }
+    Set-Content -Path $nginx_conf_file_tmp -Value $lines
+    if ($IsLinux) {
+        sudo cp $nginx_conf_file_tmp $nginx_conf_file
+        sudo chmod 644 $nginx_conf_file
+    }
+    else {
+        Copy-Item $nginx_conf_file_tmp $nginx_conf_file
     }
 }
 

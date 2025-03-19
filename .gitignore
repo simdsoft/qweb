@@ -6,9 +6,8 @@ cache
 var
 opt
 
-etc/nginx/**/nginx.conf
-etc/certs/ca-*
-etc/certs/server*
+etc/nginx
+etc/certs
 
 htdocs
 

@@ -6,8 +6,14 @@ SCRIPT_ROOT=$(cd "$SCRIPT_ROOT" && pwd -P)
 if hash pwsh 2>/dev/null; then
     POWERSHELL=pwsh
 else
-    echo "PowerShell 7+ required."
-    exit 1
+    sudo apt update
+    sudo snap install powershell --classic
+    if hash pwsh 2>/dev/null; then
+        POWERSHELL=pwsh
+    else
+        echo "PowerShell 7+ required."
+        exit 1
+    fi
 fi
 
 $POWERSHELL "$SCRIPT_ROOT/qweb.ps1" "$@"

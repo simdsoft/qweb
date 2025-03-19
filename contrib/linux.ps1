@@ -1,21 +1,35 @@
 # Ubuntu Linux
-# local dev, use current user to run mysql
-# please use `mysql` as mysqld runner user when publish your site
-$Script:qweb_user = whoami
+$Script:nginx_user = 'nginx'
+$Script:mysql_user = 'mysql' # DO NOT MODIFY
+$Script:php_user = 'www-data' # DO NOT MODIFY
 $actions.fetch = @{
-    nginx = {
+    nginx   = {
         $nginx_dir = "$install_prefix/nginx/$nginx_ver"
         if (!(Test-Path $nginx_dir -PathType Container)) {
+            sudo apt install --allow-unauthenticated --yes make
             fetch_pkg -url "https://nginx.org/download/nginx-${nginx_ver}.tar.gz" -prefix 'cache'
             $nginx_src = Join-Path $download_path "nginx-${nginx_ver}"
             Push-Location $nginx_src
-            sudo apt install --allow-unauthenticated --yes libpcre3 libpcre3-dev libssl-dev
-            ./configure --with-http_ssl_module --prefix=$nginx_dir
+            sudo apt install --allow-unauthenticated --yes gcc make libz-dev libpcre3 libpcre3-dev libssl-dev
+            $nginx_conf_dir = Join-Path $qweb_root "etc/nginx/$nginx_base_ver"
+            $nginx_logs_dir = Join-Path $qweb_root 'var/nginx/logs'
+            $nginx_tmp_dir = "$qweb_root/var/nginx/temp"
+            ./configure --with-http_ssl_module --with-http_v3_module --prefix=$nginx_dir `
+                --conf-path=$nginx_conf_dir/nginx.conf `
+                --error-log-path=$nginx_logs_dir/error.log `
+                --pid-path=$nginx_logs_dir/nginx.pid `
+                --lock-path=$nginx_logs_dir/nginx.lock `
+                --http-log-path=$nginx_logs_dir/access.log `
+                --http-client-body-temp-path=$nginx_tmp_dir/client_body_temp `
+                --http-proxy-temp-path=$nginx_tmp_dir/proxy_temp `
+                --http-fastcgi-temp-path=$nginx_tmp_dir/fastcgi_temp `
+                --http-uwsgi-temp-path=$nginx_tmp_dir/uwsgi_temp `
+                --http-scgi-temp-path=$nginx_tmp_dir/scgi_temp
             make ; make install
             Pop-Location
         }
     }
-    php   = {
+    php     = {
         # ensure we can install old releases of php on ubuntu
         $php_ppa = $(grep -ri '^deb.*ondrej/php' /etc/apt/sources.list /etc/apt/sources.list.d/)
         if (!$php_ppa) {
@@ -26,7 +40,7 @@ $actions.fetch = @{
         $php_pkg = "php$($php_ver.Major).$($php_ver.Minor)"
         sudo apt install --allow-unauthenticated --yes $php_pkg $php_pkg-fpm $php_pkg-mysql $php_pkg-curl $php_pkg-cgi
     }
-    mysql = {
+    mysql   = {
         # sudo apt install mysql-server
         # we use offical deb to install latest mysql version 9.1.0
         $os_info = $PSVersionTable.OS.Split(' ')
@@ -43,8 +57,10 @@ $actions.fetch = @{
 
         $mysqld_cmd = Get-Command mysqld -ErrorAction SilentlyContinue
         if (!$mysqld_cmd) {
-            Push-Location $download_path/mysql
-            sudo apt install --allow-unauthenticated --yes libaio1 libmecab2
+            # old ubuntu 22.04 maybe libaio1 ?
+            $aio_package_name = 'libaio-dev'
+            Push-Location $download_path/mysql-$mysql_ver
+            sudo apt install --allow-unauthenticated --yes $aio_package_name libnuma-dev libmecab2
             sudo dpkg -i mysql-common_*.deb
             sudo dpkg -i mysql-community-client-plugins*amd64.deb
             sudo dpkg -i mysql-community-client-core*amd64.deb
@@ -57,6 +73,9 @@ $actions.fetch = @{
             sudo dpkg --configure -a
             Pop-Location
         }
+    }
+    certbot = {
+        sudo apt install --allow-unauthenticated --yes certbot python3-certbot-nginx
     }
 }
 $actions.init = @{
@@ -72,61 +91,48 @@ $actions.init = @{
         }
     }
     mysql = {
-        if (Test-Path /var/lib/mysql* -PathType Container) {
-            $anwser = if ($force) { Read-Host "Are you sure force reinit mysqld, will lost all database(y/N)?" } else { 'N' }
-            if ($anwser -inotlike 'y*') {
-                println "mysql init: nothing need to do"
-                return
+	# MySQL 9.0+
+        $my_conf_dst_file = '/etc/mysql/mysql.conf.d/mysqld.cnf'
+        $my_conf_lines = Get-Content $my_conf_dst_file
+	if ($my_conf_lines.Contains('bind-address = 127.0.0.1')) {
+            println 'mysql init: nothing need to do'
+	    return
+	}
+	$my_conf_file = "$qweb_root/etc/mysql/my.ini"
+        $conf_lines = Get-Content $my_conf_file
+        foreach ($line_text in $conf_lines) {
+	    if ($line_text -match '^\s*#') {
+		continue
             }
+            if ($line_text -match '^\s*\[mysqld\]') {
+                continue
+            }
+            if (!$line_text) {
+                continue
+            }
+            println "mysql init: add config: $line_text to mysqld.conf"
+            $my_conf_lines += $line_text
         }
-
-        $mysql_tmp_dirs = @('/var/run/mysql', '/var/run/mysqld', '/var/lib/mysql', '/var/lib/mysql-files', '/var/log/mysql')
-        foreach ($tmp_dir in $mysql_tmp_dirs) {
-            sudo rm -rf $tmp_dir
-            sudo mkdir -p $tmp_dir
-            sudo chown -R ${qweb_user}:$qweb_user $tmp_dir
-        }
-
-        sudo chown -R ${qweb_user}:$qweb_user /etc/mysql
-        sudo chmod -R 750 /var/run/mysql /var/lib/mysql* /var/log/mysql /etc/mysql
-        ls -l /var/run | grep mysql
-        ls -l /var/lib | grep mysql
-        ls -l /var/log | grep mysql
-
-        sudo mysqld --initialize-insecure --user=$qweb_user | Out-Host
-            
-        $mysql_auth_backport = [int]$local_props['mysql_auth_backport']
-        $mysql_pass = $local_props['mysql_pass']
-        if ($mysql_auth_backport) {
-            Copy-Item (Join-Path $qweb_root "etc/mysql/my.ini") '/etc/mysql/conf.d/mysql.cnf' -Force
-            $init_cmds = "use mysql; ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$mysql_pass'; FLUSH PRIVILEGES;"
-        }
-        else {
-            $init_cmds = "use mysql; UPDATE user SET authentication_string='' WHERE user='root'; ALTER user 'root'@'localhost' IDENTIFIED BY '$mysql_pass';"
-        }
-
-        bash -c "sudo mysqld --user=$qweb_user >/dev/null 2>&1 &"
-        println "Wait mysqld ready ..."
-        Start-Sleep -Seconds 3
-        mysql -u root -e $init_cmds | Out-Host
-        pkill -f mysqld
+        $tmp_conf_file = Join-Path $download_path 'mysqld.cnf'
+        Set-Content -Path $tmp_conf_file -Value $my_conf_lines -Encoding utf8
+        #sudo cp $tmp_conf_file $my_conf_dst_file
     }
 }
 
 $actions.start = @{
     nginx = {
         $nginx_dir = Join-Path $install_prefix "nginx/$nginx_ver"
-        $nginx_conf = Join-Path $qweb_root "etc/nginx/$nginx_ver/nginx.conf"
+        $nginx_conf = Join-Path $qweb_root "etc/nginx/$nginx_base_ver/nginx.conf"
         Push-Location $nginx_dir
         bash -c "sudo ./sbin/nginx -t -c '$nginx_conf'" | Out-Host
         bash -c "sudo ./sbin/nginx -c '$nginx_conf' >/dev/null 2>&1 &"
         Pop-Location
     }
     php   = {
-        bash -c "nohup sudo php-cgi -b 127.0.0.1:9000 >/dev/null 2>&1 &"
+        bash -c "nohup sudo -u www-data php-cgi -b 127.0.0.1:9000 >/dev/null 2>&1 &"
     }
     mysql = {
-        bash -c "nohup sudo mysqld --user=$qweb_user >/dev/null 2>&1 &"
+        bash -c "nohup sudo mysqld --user=$mysql_user >/dev/null 2>&1 &"
     }
 }
 

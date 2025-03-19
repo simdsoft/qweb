@@ -43,7 +43,11 @@ $actions.init = @{
         # xdebug
         $xdebug_php_ver = "$($php_ver.Major).$($php_ver.Minor)"
         $xdebug_ver = $xdebug_ver_map[$xdebug_php_ver]
-        $xdebug_file_name = "php_xdebug-$xdebug_ver-$xdebug_php_ver-$php_vs-x86_64.dll"
+        if ([Version]$xdebug_ver -ge [Version]'3.4.1') {
+            $xdebug_file_name = "php_xdebug-$xdebug_ver-$xdebug_php_ver-ts-$php_vs-x86_64.dll"
+        } else {
+            $xdebug_file_name = "php_xdebug-$xdebug_ver-$xdebug_php_ver-$php_vs-x86_64.dll"
+        }
         download_file -url "https://xdebug.org/files/$xdebug_file_name" -out $(Join-Path $download_path $xdebug_file_name)
         $xdebug_src = Join-Path $download_path $xdebug_file_name
         $xdebug_dest = Join-Path $php_dir 'ext/php_xdebug.dll'
@@ -70,10 +74,8 @@ $actions.init = @{
         
         $mysql_pass = $local_props['mysql_pass']
         $mysql_auth_backport = [int]$local_props['mysql_auth_backport'] -and $mysql_ver.Major -lt 9
-        if ($mysql_auth_backport) {
-            $my_conf_file = Join-Path $qweb_root 'etc/mysql/my.ini'
-            Copy-Item $my_conf_file $mysql_dir -Force
-        }
+        $my_conf_file = Join-Path $qweb_root @('etc/mysql/my.ini', 'etc/mysql/my-old.ini')[$mysql_auth_backport]
+        Copy-Item $my_conf_file $mysql_dir -Force
 
         Push-Location $mysqld_cwd
         & $mysqld_prog --initialize-insecure --datadir $mysqld_data | Out-Host
@@ -126,7 +128,7 @@ $actions.start = @{
     nginx = {
         $nginx_dir = Join-Path $install_prefix "nginx/$nginx_ver"
         $nginx_prog = Join-Path $nginx_dir 'nginx.exe'
-        $nginx_conf = Join-Path $qweb_root "etc/nginx/$nginx_ver/nginx.conf"
+        $nginx_conf = Join-Path $qweb_root "etc/nginx/$nginx_base_ver/nginx.conf"
         $nginx_cwd = Join-Path $qweb_root 'var/nginx'
         Push-Location $nginx_cwd
         &$nginx_prog -t -c $nginx_conf | Out-Host

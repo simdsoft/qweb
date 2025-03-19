@@ -1,5 +1,5 @@
 #user  nobody;
-worker_processes  1;
+worker_processes  auto;
 
 #error_log  logs/error.log;
 #error_log  logs/error.log  notice;
@@ -42,42 +42,42 @@ http {
 
     # HTTP server
     #
-    server {
-       listen       80;
-       server_name  @QWEB_SERVER_NAMES@;
-       # relative path not work, will cause php 'No input file specified'
-       # use $realpath_root also not work
-       set $qweb_root @QWEB_ROOT@;
-
-       location / {
-           root $qweb_root/htdocs;
-           
-           location ~ \.php$ {
-              try_files $uri $uri/ =404;
-              fastcgi_pass   127.0.0.1:9000;
-              fastcgi_index  index.php;
-              include fastcgi_params;
-              fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
-           }
-
-           index  index.php index.html index.htm;
-       }
-
-       location /phpmyadmin {
-         rewrite ^/phpmyadmin$ /phpmyadmin/ permanent;
-         alias $qweb_root/opt/phpmyadmin/@phpmyadmin_ver@/;
-         location ~ ^/phpmyadmin/(.+\.php)$ {
-           try_files $uri =404;
-           fastcgi_pass   127.0.0.1:9000;
-           fastcgi_index  index.php;
-           include fastcgi_params;
-           # $document_root$fastcgi_script_name not work
-           # $request_filename also works, not not perform rewrite /phpmyadmin/
-           fastcgi_param  SCRIPT_FILENAME $document_root$1;
-         }
-         index  index.php index.html index.htm;
-       }
-    }
+    # server {
+    #    listen       80;
+    #    server_name  @QWEB_SERVER_NAMES@;
+    #    # relative path not work, will cause php 'No input file specified'
+    #    # use $realpath_root also not work
+    #    set $qweb_root @QWEB_ROOT@;
+    # 
+    #    location / {
+    #        root $qweb_root/htdocs;
+    #        
+    #        location ~ \.php$ {
+    #           try_files $uri $uri/ =404;
+    #           fastcgi_pass   127.0.0.1:9000;
+    #           fastcgi_index  index.php;
+    #           include fastcgi_params;
+    #           fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+    #        }
+    # 
+    #        index  index.php index.html index.htm;
+    #    }
+    # 
+    #    location /phpmyadmin {
+    #      rewrite ^/phpmyadmin$ /phpmyadmin/ permanent;
+    #      alias $qweb_root/opt/phpmyadmin/@phpmyadmin_ver@/;
+    #      location ~ ^/phpmyadmin/(.+\.php)$ {
+    #        try_files $uri =404;
+    #        fastcgi_pass   127.0.0.1:9000;
+    #        fastcgi_index  index.php;
+    #        include fastcgi_params;
+    #        # $document_root$fastcgi_script_name not work
+    #        # $request_filename also works, not not perform rewrite /phpmyadmin/
+    #        fastcgi_param  SCRIPT_FILENAME $document_root$1;
+    #      }
+    #      index  index.php index.html index.htm;
+    #    }
+    # }
 
     # HTTPS server
     #
